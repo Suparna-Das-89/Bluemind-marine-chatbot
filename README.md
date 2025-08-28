@@ -16,11 +16,11 @@ It combines **retrieval-augmented answers (Wikipedia)** with **live marine data 
 ---
 
 ## 🚀 Demo
-👉 *[Add your Streamlit Cloud link here after deployment]*
+👉 *[Will be adding my Streamlit Cloud link here after deployment]*
 
 ---
 
-## 🛠 Tech Stack
+## 🛠 Tech Stack (Will update accordingly)
 - **Frontend:** Streamlit (Python)
 - **Data APIs:** Wikipedia API, Open-Meteo Marine API
 - **LLM:** Hugging Face `flan-t5-base` (runs locally, no API key needed)
