@@ -26,6 +26,8 @@ except Exception:
 @st.cache_data(show_spinner=False)
 def http_get_json(url: str, params: Optional[dict] = None, headers: Optional[dict] = None):
     try:
+        if headers is None:
+            headers = {"User-Agent": "BlueMindBot/0.1 (https://github.com/<your-username>/bluemind-marine-chatbot)"}
         r = requests.get(url, params=params, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
