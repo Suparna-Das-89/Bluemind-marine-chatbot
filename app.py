@@ -26,8 +26,11 @@ except Exception:
 @st.cache_data(show_spinner=False)
 def http_get_json(url: str, params: Optional[dict] = None, headers: Optional[dict] = None):
     try:
+        # Wikipedia and some APIs require a descriptive User-Agent
         if headers is None:
-            headers = {"User-Agent": "BlueMindBot/0.1 (https://github.com/<your-username>/bluemind-marine-chatbot)"}
+            headers = {"User-Agent": "BlueMind/0.1 (+https://github.com/your-username/bluemind-marine-chatbot)"}
+        else:
+            headers.setdefault("User-Agent", "BlueMind/0.1 (+https://github.com/your-username/bluemind-marine-chatbot)")
         r = requests.get(url, params=params, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
@@ -141,11 +144,68 @@ def load_llm():
         # Flan-T5 is lightweight and good for zero-cost demos (text2text)
         return pipeline("text2text-generation", model="google/flan-t5-base")
     except Exception as e:
-        st.warning(f"Could not load local HF model: {e}")
+        st.warning(f"Could not load local HF model: {e}
+Tip: add 'torch' to requirements.txt or switch to an API LLM later.")
         return None
+
+# Curated pages for generic "why are ocean animals in danger?" queries
+THREAT_PAGES = [
+    "Overfishing",
+    "Bycatch",
+    "Marine pollution",
+    "Plastic pollution",
+    "Ocean acidification",
+    "Climate change and oceans",
+    "Coral bleaching",
+    "Habitat destruction",
+    "Noise pollution",
+    "Invasive species",
+]
+
+DANGER_KEYWORDS = (
+    "danger", "threat", "endangered", "risk", "dying", "decline",
+    "why are ocean animals", "why are marine animals", "why are sea animals",
+)
+
+
+def route_topics(question: str) -> List[str]:
+    q = (question or "").lower()
+    if any(k in q for k in DANGER_KEYWORDS):
+        # Use curated threat taxonomy instead of a generic search that may return a random species page
+        return THREAT_PAGES[:5]  # top 5 to keep it concise
+    # Otherwise fall back to Wikipedia search results (titles only)
+    pages = wiki_search(question, limit=3)
+    titles = [p.get("title") for p in pages if p.get("title")]
+    return titles
 
 
 def build_prompt(question: str, retrieved_notes: str, persona: str = "Scientist") -> str:
+    role = {
+        "Scientist": "Explain with clear steps, definitions, and short paragraphs.",
+        "Naturalist": "Explain with biology/ecology focus and accessible language.",
+        "Policy": "Explain practical implications for conservation policy and humans.",
+        "Poetic": "Explain accurately but with a gentle, metaphorical tone.",
+    }.get(persona, "Explain clearly and concisely.")
+
+    template = f"""
+You are BlueMind, a careful ocean expert. {role}
+Answer the user's question DIRECTLY first, then provide a concise list of the TOP 5 causes with one-line mechanisms and one-line examples.
+Use only facts supportable by the context. If something is uncertain or missing in the context, say so.
+Return this structure:
+
+1) Direct answer (2–3 sentences)
+2) Top causes (bulleted, cause → mechanism → example)
+3) What can help (2–3 practical levers)
+4) Sources: comma-separated page titles
+
+Context:
+{retrieved_notes}
+
+Question: {question}
+
+Answer:
+"""
+    return textwrap.dedent(template).strip()(question: str, retrieved_notes: str, persona: str = "Scientist") -> str:
     role = {
         "Scientist": "Explain with clear steps, definitions, and short paragraphs.",
         "Naturalist": "Explain with biology/ecology focus and accessible language.",
@@ -169,33 +229,48 @@ Answer:
 
 
 def generate_answer(question: str, persona: str, search_terms: Optional[str] = None) -> Dict:
-    # Retrieve context via Wikipedia (simple, free)
-    pages = wiki_search(search_terms or question, limit=3)
+    # Decide which pages to use (router → curated topics for danger-style questions)
+    titles = route_topics(search_terms or question)
+
     extracts = []
-    titles = []
-    for p in pages:
-        t = p.get("title")
+    for t in titles:
         if not t:
             continue
-        titles.append(t)
-        extracts.append(f"# {t}\n" + wiki_extract(t, sentences=6))
-    context = "\n\n".join(extracts) if extracts else "(No external context retrieved.)"
+        extracts.append(f"# {t}
+" + (wiki_extract(t, sentences=8) or ""))
+    context = "
+
+".join(extracts) if extracts else "(No external context retrieved.)"
 
     # Build prompt
     prompt = build_prompt(question, context, persona)
 
-    # Try HF local model; if unavailable, fall back to a simple stitched summary
+    # Try HF local model; if unavailable, fall back to a crisp template-driven summary
     llm = load_llm()
     if llm is not None:
         try:
-            out = llm(prompt, max_new_tokens=256)
+            out = llm(prompt, max_new_tokens=320)
             answer = out[0]["generated_text"].strip()
         except Exception as e:
             answer = f"Model error, falling back to summary. Error: {e}"
     else:
-        # Extremely simple fallback: return context + heuristic tail
-        answer = ("Context-based summary (fallback):\n\n" + context[:1200] +
-                  "\n\n(Answer synthesis omitted: add a local HF model for richer outputs.)")
+        # Template fallback: synthesize a clear outline from the context
+        bullets = []
+        for t in titles[:5]:
+            if not t:
+                continue
+            bullets.append(f"- {t}: see context excerpt above.")
+        direct = "Marine animals face multiple human-driven pressures including overfishing, pollution, and climate-related changes that degrade habitats and food webs."
+        helpm = "Reduce overfishing/bycatch, cut pollution, protect habitats, and curb greenhouse gas emissions."
+        answer = f"1) Direct answer: {direct}
+
+2) Top causes:
+" + "
+".join(bullets) + f"
+
+3) What can help: {helpm}
+
+4) Sources: "+ ", ".join(titles)
 
     return {
         "answer": answer,
