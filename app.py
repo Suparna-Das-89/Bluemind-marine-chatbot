@@ -205,7 +205,7 @@ Question: {question}
 
 Answer:
 """
-    return textwrap.dedent(template).strip()(question: str, retrieved_notes: str, persona: str = "Scientist") -> str:
+    def build_prompt(question: str, retrieved_notes: str, persona: str = "Scientist") -> str:
     role = {
         "Scientist": "Explain with clear steps, definitions, and short paragraphs.",
         "Naturalist": "Explain with biology/ecology focus and accessible language.",
@@ -226,6 +226,7 @@ Question: {question}
 Answer:
 """
     return textwrap.dedent(template).strip()
+
 
 
 def generate_answer(question: str, persona: str, search_terms: Optional[str] = None) -> Dict:
