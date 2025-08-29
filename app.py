@@ -205,27 +205,8 @@ Question: {question}
 
 Answer:
 """
-    def build_prompt(question: str, retrieved_notes: str, persona: str = "Scientist") -> str:
-    role = {
-        "Scientist": "Explain with clear steps, definitions, and short paragraphs.",
-        "Naturalist": "Explain with biology/ecology focus and accessible language.",
-        "Policy": "Explain practical implications for conservation policy and humans.",
-        "Poetic": "Explain accurately but with a gentle, metaphorical tone.",
-    }.get(persona, "Explain clearly and concisely.")
-
-    template = f"""
-You are BlueMind, a helpful ocean expert. {role}
-Use the context to answer the user's question. If context is missing something, say what is uncertain.
-Always keep answers grounded to marine science.
-
-Context:
-{retrieved_notes}
-
-Question: {question}
-
-Answer:
-"""
     return textwrap.dedent(template).strip()
+
 
 
 
@@ -233,15 +214,14 @@ def generate_answer(question: str, persona: str, search_terms: Optional[str] = N
     # Decide which pages to use (router → curated topics for danger-style questions)
     titles = route_topics(search_terms or question)
 
+    # Build context from Wikipedia extracts
     extracts = []
     for t in titles:
         if not t:
             continue
-        extracts.append(f"# {t}
-" + (wiki_extract(t, sentences=8) or ""))
-    context = "
-
-".join(extracts) if extracts else "(No external context retrieved.)"
+        # Make sure the newline is inside the string:
+        extracts.append(f"# {t}\n" + (wiki_extract(t, sentences=8) or ""))
+    context = "\n\n".join(extracts) if extracts else "(No external context retrieved.)"
 
     # Build prompt
     prompt = build_prompt(question, context, persona)
@@ -261,23 +241,24 @@ def generate_answer(question: str, persona: str, search_terms: Optional[str] = N
             if not t:
                 continue
             bullets.append(f"- {t}: see context excerpt above.")
-        direct = "Marine animals face multiple human-driven pressures including overfishing, pollution, and climate-related changes that degrade habitats and food webs."
+        direct = (
+            "Marine animals face multiple human-driven pressures including overfishing, pollution, and "
+            "climate-related changes that degrade habitats and food webs."
+        )
         helpm = "Reduce overfishing/bycatch, cut pollution, protect habitats, and curb greenhouse gas emissions."
-        answer = f"1) Direct answer: {direct}
-
-2) Top causes:
-" + "
-".join(bullets) + f"
-
-3) What can help: {helpm}
-
-4) Sources: "+ ", ".join(titles)
+        answer = (
+            f"1) Direct answer: {direct}\n\n"
+            f"2) Top causes:\n" + "\n".join(bullets) + "\n\n"
+            f"3) What can help: {helpm}\n\n"
+            f"4) Sources: " + ", ".join(titles)
+        )
 
     return {
         "answer": answer,
         "sources": titles,
         "raw_context": context,
     }
+
 
 # ---------------------
 # Streamlit UI assembly
