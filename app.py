@@ -1,14 +1,14 @@
-# BlueMind: The Marine Chatbot (single-file Streamlit app)
+# BlueMind: The Marine Chatbot — Groq JSON edition (no persona, no refine box)
 
 from typing import Dict, List, Optional
-import textwrap
+import json, textwrap, re
 
 import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Try to load a small local model via transformers (no API key needed)
+# Optional local fallback model (no key). If not present, we just skip it.
 try:
     from transformers import pipeline
     _HF_AVAILABLE = True
@@ -16,37 +16,32 @@ except Exception:
     _HF_AVAILABLE = False
 
 # ---------------------------
-# Utility: Caching web fetches
+# HTTP helper with User-Agent
 # ---------------------------
 @st.cache_data(show_spinner=False)
 def http_get_json(url: str, params: Optional[dict] = None, headers: Optional[dict] = None):
-    """GET JSON with a proper User-Agent so Wikipedia/Open APIs don't 403."""
     try:
         if headers is None:
-            headers = {"User-Agent": "BlueMind/0.1 (+https://github.com/your-username/bluemind-marine-chatbot)"}
+            headers = {"User-Agent": "BlueMind/0.3 (+https://github.com/your-username/bluemind-marine-chatbot)"}
         else:
-            headers.setdefault("User-Agent", "BlueMind/0.1 (+https://github.com/your-username/bluemind-marine-chatbot)")
-        r = requests.get(url, params=params, headers=headers, timeout=15)
+            headers.setdefault("User-Agent", "BlueMind/0.3 (+https://github.com/your-username/bluemind-marine-chatbot)")
+        r = requests.get(url, params=params, headers=headers, timeout=20)
         r.raise_for_status()
         return r.json()
     except Exception as e:
         st.warning(f"Request failed: {e}")
         return None
 
-# -----------------------------------
-# Retrieval: Simple Wikipedia wrappers
-# -----------------------------------
+# ---------------------------
+# Wikipedia wrappers
+# ---------------------------
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 
 @st.cache_data(show_spinner=False)
 def wiki_search(query: str, limit: int = 5) -> List[Dict]:
     params = {
-        "action": "query",
-        "list": "search",
-        "srsearch": query,
-        "format": "json",
-        "srlimit": limit,
-        "utf8": 1,
+        "action": "query", "list": "search", "srsearch": query,
+        "format": "json", "srlimit": limit, "utf8": 1,
     }
     data = http_get_json(WIKI_API, params)
     if not data:
@@ -56,13 +51,8 @@ def wiki_search(query: str, limit: int = 5) -> List[Dict]:
 @st.cache_data(show_spinner=False)
 def wiki_extract(title: str, sentences: int = 6) -> str:
     params = {
-        "action": "query",
-        "prop": "extracts",
-        "explaintext": 1,
-        "exsentences": sentences,
-        "titles": title,
-        "format": "json",
-        "utf8": 1,
+        "action": "query", "prop": "extracts", "explaintext": 1, "exsentences": sentences,
+        "titles": title, "format": "json", "utf8": 1,
     }
     data = http_get_json(WIKI_API, params)
     if not data:
@@ -76,12 +66,8 @@ def wiki_extract(title: str, sentences: int = 6) -> str:
 @st.cache_data(show_spinner=False)
 def wiki_page_image(title: str) -> Optional[str]:
     params = {
-        "action": "query",
-        "prop": "pageimages",
-        "format": "json",
-        "piprop": "original",
-        "titles": title,
-        "utf8": 1,
+        "action": "query", "prop": "pageimages", "format": "json",
+        "piprop": "original", "titles": title, "utf8": 1,
     }
     data = http_get_json(WIKI_API, params)
     if not data:
@@ -93,65 +79,77 @@ def wiki_page_image(title: str) -> Optional[str]:
     original = page.get("original")
     return original.get("source") if original else None
 
-# -------------------------------------
-# Ocean Data: Open-Meteo marine (key-free)
-# -------------------------------------
+# ---------------------------
+# Ocean data (Open-Meteo)
+# ---------------------------
 OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
 
 @st.cache_data(show_spinner=False)
 def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Optional[pd.DataFrame]:
     params = {
-        "latitude": lat,
-        "longitude": lon,
+        "latitude": lat, "longitude": lon,
         "hourly": [
-            "wave_height",
-            "wave_direction",
-            "wind_wave_height",
-            "wind_wave_direction",
-            "swell_wave_height",
-            "swell_wave_direction",
-            "wind_speed_10m",
+            "wave_height","wave_direction","wind_wave_height","wind_wave_direction",
+            "swell_wave_height","swell_wave_direction","wind_speed_10m",
         ],
-        "start_date": start,  # YYYY-MM-DD
-        "end_date": end,
-        "timezone": "UTC",
+        "start_date": start, "end_date": end, "timezone": "UTC",
     }
     data = http_get_json(OPEN_METEO_MARINE, params)
     if not data or "hourly" not in data:
         return None
-    hourly = data["hourly"]
-    df = pd.DataFrame(hourly)
+    df = pd.DataFrame(data["hourly"])
     if "time" in df:
         df["time"] = pd.to_datetime(df["time"])
     return df
 
-# -----------------------------
-# LLM: Explain & answer builder
-# -----------------------------
+# ---------------------------
+# Groq (primary) + HF fallback
+# ---------------------------
 @st.cache_resource(show_spinner=False)
-def load_llm():
-    """Load a small local text2text model; optional and key-free."""
+def load_local_llm():
     if not _HF_AVAILABLE:
         return None
     try:
-        # Flan-T5 is lightweight and okay for demos (quality is modest)
         return pipeline("text2text-generation", model="google/flan-t5-base")
-    except Exception as e:
-        st.warning(f"Could not load local HF model: {e}. Tip: add 'torch' to requirements.txt or switch to an API LLM later.")
+    except Exception:
         return None
 
-# -----------------------------
-# Intent routing & topic banks
-# -----------------------------
+def ask_llm(prompt: str) -> str:
+    """Prefer Groq LLaMA-3.1-70B; fallback to local tiny model if no key."""
+    groq_key = st.secrets.get("GROQ_API_KEY") or None
+    if groq_key:
+        try:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {groq_key}"}
+            body = {
+                "model": "llama-3.1-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+            }
+            r = requests.post(url, json=body, headers=headers, timeout=45)
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            st.warning(f"Groq call failed, using local fallback. ({e})")
+
+    llm = load_local_llm()
+    if llm is None:
+        return ""
+    out = llm(prompt, max_new_tokens=420)
+    return out[0]["generated_text"].strip()
+
+# ---------------------------
+# Intent routing
+# ---------------------------
 THREAT_PAGES = [
-    "Overfishing", "Bycatch", "Marine pollution", "Plastic pollution",
-    "Ocean acidification", "Climate change and oceans", "Coral bleaching",
-    "Habitat destruction", "Noise pollution", "Invasive species",
+    "Overfishing","Bycatch","Marine pollution","Plastic pollution",
+    "Ocean acidification","Climate change and oceans","Coral bleaching",
+    "Habitat destruction","Noise pollution","Invasive species",
 ]
 MARINE_ENTITY_WORDS = (
     "fish","shark","whale","dolphin","porpoise","seal","sea lion","manatee","dugong",
     "turtle","ray","skate","octopus","squid","cuttlefish","jellyfish","crab","lobster",
-    "shrimp","krill","eel","anchovy","tuna","salmon","cod","mola","sunfish"
+    "shrimp","krill","eel","anchovy","tuna","salmon","cod","mola","sunfish","basking"
 )
 DANGER_KEYWORDS = (
     "danger","threat","endangered","risk","dying","decline",
@@ -170,11 +168,11 @@ def classify_intent(question: str) -> str:
 
 def route_titles(question: str, intent: str) -> List[str]:
     q = (question or "").strip()
+    ql = q.lower()
+
     if intent == "threats":
         return THREAT_PAGES[:5]
 
-    # Heuristics for common superlative questions
-    ql = q.lower()
     if intent == "entity":
         if "largest fish" in ql or "biggest fish" in ql:
             return ["Whale shark", "List of largest fish"]
@@ -182,20 +180,18 @@ def route_titles(question: str, intent: str) -> List[str]:
             return ["Whale shark", "List of largest sharks"]
         if "largest mammal" in ql or "biggest mammal" in ql:
             return ["Blue whale"]
-        # Otherwise, use search and filter to marine-y titles
-        hits = wiki_search(q, limit=5)
+        hits = wiki_search(q, limit=6)
         titles = [h.get("title") for h in hits if h.get("title")]
         keep = []
         for t in titles:
             tl = t.lower()
-            if any(w in tl for w in MARINE_ENTITY_WORDS):
+            if any(w in tl for w in MARINE_ENTITY_WORDS) or "list of" in tl:
                 keep.append(t)
-        return keep[:3] or titles[:3]
+        return keep[:4] or titles[:3]
 
-    # topic (default): use search; prefer exact-ish matches
-    hits = wiki_search(q, limit=5)
+    # topic default
+    hits = wiki_search(q, limit=6)
     titles = [h.get("title") for h in hits if h.get("title")]
-    # Prefer exact title or those that contain the query words
     words = [w for w in ql.split() if len(w) >= 4]
     def good(t):
         tl = t.lower()
@@ -203,197 +199,9 @@ def route_titles(question: str, intent: str) -> List[str]:
     filtered = [t for t in titles if good(t)]
     return filtered[:3] or titles[:3]
 
-# -----------------------------
-# Prompts per intent
-# -----------------------------
-def prompt_threats(question: str, context: str, persona: str) -> str:
-    role = {
-        "Scientist": "Explain with clear steps, definitions, and short paragraphs.",
-        "Naturalist": "Explain with ecology focus and accessible language.",
-        "Policy": "Explain practical implications for conservation and people.",
-        "Poetic": "Explain accurately with gentle, metaphorical tone.",
-    }.get(persona, "Explain clearly and concisely.")
-
-    exemplar = """
-EXAMPLE ANSWER FORMAT:
-1) Direct answer: One or two sentences summarizing the key threats.
-2) Top causes:
-- Overfishing → Stocks depleted → Atlantic cod collapse (1990s).
-- Plastic pollution → Ingestion/entanglement → Turtles ingesting bags.
-- Ocean acidification → Weaker shells/skeletons → Pteropod shell dissolution.
-- Marine heatwaves → Heat stress → 2016 Great Barrier Reef bleaching.
-- Bycatch → Non-target mortality → Turtle/seabird deaths in longlines.
-3) What can help: Concrete actions in 1 line.
-4) Sources: Comma-separated page titles.
-""".strip()
-
-    tpl = f"""
-You are BlueMind, a careful ocean expert. {role}
-Use ONLY the context.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{question}
-
-INSTRUCTIONS:
-- Follow the EXAMPLE ANSWER FORMAT exactly.
-- Keep bullets to one line: cause → mechanism → example.
-- If context is missing something, say so briefly in Direct answer.
-
-{exemplar}
-
-NOW WRITE YOUR ANSWER:
-"""
-    return textwrap.dedent(tpl).strip()
-
-def prompt_entity(question: str, context: str, persona: str) -> str:
-    role = {
-        "Scientist": "Be precise with sizes, taxonomy, and qualifiers.",
-        "Naturalist": "Be clear and friendly; highlight key traits and habitat.",
-        "Policy": "Note conservation status and human impacts briefly.",
-        "Poetic": "Accurate, but with a hint of wonder.",
-    }.get(persona, "Be precise and concise.")
-
-    exemplar = """
-EXAMPLE ANSWER FORMAT:
-1) Direct answer: “The whale shark (Rhincodon typus) is the largest living fish.”
-2) Key facts:
-- Typical & maximum size (ranges, sources vary; note uncertainty).
-- Where it lives (oceans/latitudes/habitats).
-- Diet/behavior basics.
-3) Context note: If multiple contenders exist (e.g., basking shark), mention them briefly.
-4) Sources: Page titles used.
-""".strip()
-
-    tpl = f"""
-You are BlueMind, a marine naturalist. {role}
-Use ONLY the context.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{question}
-
-INSTRUCTIONS:
-- Start with a one-sentence direct answer to the superlative question.
-- Then give 3–4 short bullets of key facts.
-- Avoid generic threats unless the question asks about threats.
-- If context is thin, state the most likely answer and note uncertainty.
-- End with 'Sources:' and the page titles.
-
-{exemplar}
-
-NOW WRITE YOUR ANSWER:
-"""
-    return textwrap.dedent(tpl).strip()
-
-def prompt_topic(question: str, context: str, persona: str) -> str:
-    role = {
-        "Scientist": "Explain mechanisms and use crisp structure.",
-        "Naturalist": "Keep it accessible; link process to ecosystems.",
-        "Policy": "Highlight impacts and mitigation briefly.",
-        "Poetic": "Stay accurate; add gentle imagery.",
-    }.get(persona, "Explain clearly.")
-
-    exemplar = """
-EXAMPLE ANSWER FORMAT:
-1) What it is: 1–2 lines definition.
-2) How it works: 3 bullets (process → effect).
-3) Why it matters: 2 bullets (ecology/people).
-4) What scientists watch: 2 bullets (indicators/events).
-5) Sources: Titles.
-""".strip()
-
-    tpl = f"""
-You are BlueMind, an ocean explainer. {role}
-Use ONLY the context.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{question}
-
-INSTRUCTIONS:
-- Follow the EXAMPLE ANSWER FORMAT.
-- Be concise; no filler.
-- End with 'Sources:' and the page titles.
-
-{exemplar}
-
-NOW WRITE YOUR ANSWER:
-"""
-    return textwrap.dedent(tpl).strip()
-
-# -----------------------------
-# Validators & fallbacks
-# -----------------------------
-def validate_has_sections(text: str, required: List[str]) -> bool:
-    if not text or len(text) < 60:
-        return False
-    return all(h in text for h in required)
-
-def fallback_threats(titles: List[str]) -> str:
-    mech = {
-        "Overfishing": "Stocks depleted → food-web shifts → Cod collapse (1990s).",
-        "Bycatch": "Non-target mortality in nets/longlines → Turtles & seabirds.",
-        "Marine pollution": "Nutrients/oil/sewage → Hypoxia & disease.",
-        "Plastic pollution": "Ingestion/entanglement → Injury & starvation.",
-        "Ocean acidification": "Lower pH → Fewer carbonate ions → Weaker shells.",
-        "Climate change and oceans": "Warming/stratification → Heatwaves & habitat shifts.",
-        "Coral bleaching": "Heat stress → Symbionts expelled → Mass bleaching.",
-        "Habitat destruction": "Trawling/coastal build → Seafloor & nursery loss.",
-        "Noise pollution": "Ship/seismic noise → Communication stress.",
-        "Invasive species": "Ballast transfer → Native displacement → Lionfish.",
-    }
-    picked = [t for t in titles if t in mech] or titles[:5]
-    bullets = [f"- {t} → {mech.get(t, 'See context excerpt above.')}" for t in picked[:5]]
-    direct = (
-        "Marine animals face multiple human-driven threats that reduce habitat quality, alter food webs, "
-        "and increase mortality."
-    )
-    helpm = "Cut overfishing/bycatch, reduce pollution, protect habitats, and curb greenhouse-gas emissions."
-    return (
-        f"1) Direct answer: {direct}\n\n"
-        f"2) Top causes:\n" + "\n".join(bullets) + "\n\n"
-        f"3) What can help: {helpm}\n\n"
-        f"4) Sources: " + ", ".join(picked)
-    )
-
-def fallback_entity(titles: List[str]) -> str:
-    if "Whale shark" in titles or "List of largest fish" in titles:
-        return (
-            "1) Direct answer: The whale shark (*Rhincodon typus*) is the largest living fish.\n\n"
-            "2) Key facts:\n"
-            "- Typical size ~10–12 m; occasionally reported larger; filter-feeding shark.\n"
-            "- Found in tropical & warm-temperate oceans; migratory.\n"
-            "- Gentle filter feeder on plankton/small fishes; often near surface.\n\n"
-            "3) Context note: The basking shark is also very large but typically smaller.\n\n"
-            "4) Sources: Whale shark, List of largest fish"
-        )
-    # Generic entity fallback
-    return (
-        "1) Direct answer: Based on context, the requested marine superlative likely refers to a well-known species.\n\n"
-        "2) Key facts:\n- See sources for the most relevant candidate(s).\n\n"
-        "3) Context note: Provide a more specific phrase (e.g., 'largest fish in the ocean').\n\n"
-        "4) Sources: " + ", ".join(titles[:3])
-    )
-
-def fallback_topic(titles: List[str]) -> str:
-    return (
-        "1) What it is: See the sources for a concise definition of the topic.\n\n"
-        "2) How it works:\n- Mechanism 1\n- Mechanism 2\n- Mechanism 3\n\n"
-        "3) Why it matters:\n- Ecosystem impact\n- Human impact\n\n"
-        "4) What scientists watch:\n- Key indicator 1\n- Key indicator 2\n\n"
-        "5) Sources: " + ", ".join(titles[:3])
-    )
-
-# -----------------------------
-# Orchestrator
-# -----------------------------
+# ---------------------------
+# Build context from titles
+# ---------------------------
 def build_context(titles: List[str], sents: int = 8) -> str:
     extracts = []
     for t in titles:
@@ -402,44 +210,261 @@ def build_context(titles: List[str], sents: int = 8) -> str:
         extracts.append(f"# {t}\n" + (wiki_extract(t, sentences=sents) or ""))
     return "\n\n".join(extracts) if extracts else "(No external context retrieved.)"
 
-def generate_answer(question: str, persona: str, search_terms: Optional[str] = None) -> Dict:
-    intent = classify_intent(search_terms or question)
-    titles = route_titles(search_terms or question, intent)
+# ---------------------------
+# JSON prompts per intent (fixed professional tone)
+# ---------------------------
+def json_prompt_threats(question: str, context: str) -> str:
+    schema = textwrap.dedent("""
+    {
+      "type":"object",
+      "properties":{
+        "direct_answer":{"type":"string"},
+        "causes":{"type":"array","items":{"type":"object","properties":{
+          "cause":{"type":"string"},
+          "mechanism":{"type":"string"},
+          "example":{"type":"string"}
+        },"required":["cause","mechanism"]}},
+        "actions":{"type":"array","items":{"type":"string"}},
+        "sources":{"type":"array","items":{"type":"string"}}
+      },
+      "required":["direct_answer","causes","actions","sources"]
+    }
+    """).strip()
+    return f"""
+You are BlueMind, an ocean expert. Use ONLY the context.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+TASK:
+Return a JSON object that matches this JSON Schema exactly (no extra fields, no prose outside JSON).
+Schema:
+{schema}
+
+Guidelines:
+- direct_answer: 1–2 sentences.
+- causes: up to 5; each one line mechanism; include example if context supports it.
+- actions: 3–5 concise actions.
+- sources: page titles used.
+"""
+
+def json_prompt_entity(question: str, context: str) -> str:
+    schema = textwrap.dedent("""
+    {
+      "type":"object",
+      "properties":{
+        "direct_answer":{"type":"string"},
+        "facts":{"type":"array","items":{"type":"string"}},
+        "note":{"type":"string"},
+        "sources":{"type":"array","items":{"type":"string"}}
+      },
+      "required":["direct_answer","facts","sources"]
+    }
+    """).strip()
+    return f"""
+You are BlueMind, a precise marine naturalist. Use ONLY the context.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+TASK:
+Return a JSON object per this Schema (no prose outside JSON):
+{schema}
+
+Guidelines:
+- direct_answer: 1 sentence answering the superlative (e.g., "The whale shark ...").
+- facts: 3–4 bullets (size range, distribution/habitat, diet/behavior).
+- note: optional comparison/uncertainty if applicable.
+- sources: page titles used.
+"""
+
+def json_prompt_topic(question: str, context: str) -> str:
+    schema = textwrap.dedent("""
+    {
+      "type":"object",
+      "properties":{
+        "what":{"type":"string"},
+        "how":{"type":"array","items":{"type":"string"}},
+        "why":{"type":"array","items":{"type":"string"}},
+        "watch":{"type":"array","items":{"type":"string"}},
+        "sources":{"type":"array","items":{"type":"string"}}
+      },
+      "required":["what","how","why","watch","sources"]
+    }
+    """).strip()
+    return f"""
+You are BlueMind, an ocean explainer. Use ONLY the context.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+TASK:
+Return a JSON object per this Schema (no prose outside JSON):
+{schema}
+
+Guidelines:
+- what: 1–2 sentences definition.
+- how: 3 bullets (process → effect).
+- why: 2 bullets (ecosystems/people).
+- watch: 2 bullets (indicators/events).
+- sources: page titles used.
+"""
+
+# ---------------------------
+# JSON parsing & fallbacks
+# ---------------------------
+def try_parse_json(s: str) -> Optional[dict]:
+    if not s:
+        return None
+    m = re.search(r"\{.*\}\s*$", s, flags=re.S)
+    candidate = m.group(0) if m else s.strip()
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+def fallback_json(intent: str, titles: List[str]) -> dict:
+    if intent == "threats":
+        mech = {
+            "Overfishing": "Stocks depleted; food-web shifts; cod collapse (1990s).",
+            "Bycatch": "Non-target mortality in nets/longlines; turtles & seabirds.",
+            "Marine pollution": "Nutrients/oil/sewage → hypoxia & disease.",
+            "Plastic pollution": "Ingestion/entanglement → injury & starvation.",
+            "Ocean acidification": "Lower pH → fewer carbonate ions → weaker shells.",
+            "Climate change and oceans": "Warming/stratification → heatwaves & shifts.",
+            "Coral bleaching": "Heat stress → symbionts expelled → mass bleaching.",
+        }
+        picked = [t for t in titles if t in mech] or titles[:5]
+        return {
+            "direct_answer": "Marine animals face multiple human-driven threats that reduce habitat quality, alter food webs, and increase mortality.",
+            "causes": [{"cause": t, "mechanism": mech.get(t, "See context.")} for t in picked[:5]],
+            "actions": ["Sustainable catch limits", "Reduce bycatch", "Cut nutrient/plastic pollution", "Protect habitats", "Lower GHG emissions"],
+            "sources": picked
+        }
+    if intent == "entity":
+        if "Whale shark" in titles or "List of largest fish" in titles:
+            return {
+                "direct_answer": "The whale shark (Rhincodon typus) is the largest living fish.",
+                "facts": [
+                    "Typical size ~10–12 m; occasionally reported larger.",
+                    "Tropical & warm-temperate oceans; migratory.",
+                    "Filter-feeding on plankton and small fishes."
+                ],
+                "note": "The basking shark is also very large but typically smaller.",
+                "sources": ["Whale shark","List of largest fish"]
+            }
+        return {
+            "direct_answer": "Based on context, the superlative likely refers to a well-known marine species.",
+            "facts": ["See sources for top candidates."],
+            "note": "Provide a more specific phrase if possible.",
+            "sources": titles[:3]
+        }
+    # topic
+    return {
+        "what": "See sources for definition.",
+        "how": ["Mechanism 1","Mechanism 2","Mechanism 3"],
+        "why": ["Ecosystem impact","Human impact"],
+        "watch": ["Indicator 1","Indicator 2"],
+        "sources": titles[:3]
+    }
+
+def render_answer(intent: str, data: dict) -> str:
+    if intent == "threats":
+        lines = []
+        lines.append(f"1) Direct answer: {data.get('direct_answer','')}")
+        causes = data.get("causes", [])
+        if causes:
+            lines.append("\n2) Top causes:")
+            for c in causes[:5]:
+                cause = c.get("cause","")
+                mech = c.get("mechanism","")
+                ex = c.get("example")
+                item = f"- {cause} → {mech}" + (f" → {ex}" if ex else "")
+                lines.append(item)
+        actions = data.get("actions", [])
+        if actions:
+            lines.append("\n3) What can help: " + "; ".join(actions))
+        sources = data.get("sources", [])
+        lines.append("\n4) Sources: " + ", ".join(sources))
+        return "\n".join(lines)
+
+    if intent == "entity":
+        lines = []
+        lines.append(f"1) Direct answer: {data.get('direct_answer','')}")
+        facts = data.get("facts", [])
+        if facts:
+            lines.append("\n2) Key facts:")
+            for f in facts[:5]:
+                lines.append(f"- {f}")
+        note = data.get("note")
+        if note:
+            lines.append(f"\n3) Context note: {note}")
+        sources = data.get("sources", [])
+        lines.append("\n4) Sources: " + ", ".join(sources))
+        return "\n".join(lines)
+
+    # topic
+    lines = []
+    lines.append(f"1) What it is: {data.get('what','')}")
+    how = data.get("how", [])
+    if how:
+        lines.append("\n2) How it works:")
+        for h in how[:5]:
+            lines.append(f"- {h}")
+    why = data.get("why", [])
+    if why:
+        lines.append("\n3) Why it matters:")
+        for w in why[:4]:
+            lines.append(f"- {w}")
+    watch = data.get("watch", [])
+    if watch:
+        lines.append("\n4) What scientists watch:")
+        for w in watch[:4]:
+            lines.append(f"- {w}")
+    sources = data.get("sources", [])
+    lines.append("\n5) Sources: " + ", ".join(sources))
+    return "\n".join(lines)
+
+# ---------------------------
+# Orchestrator
+# ---------------------------
+def build_json_prompt(intent: str, question: str, context: str) -> str:
+    if intent == "threats":
+        return json_prompt_threats(question, context)
+    if intent == "entity":
+        return json_prompt_entity(question, context)
+    return json_prompt_topic(question, context)
+
+def generate_answer(question: str) -> Dict:
+    intent = classify_intent(question)
+    titles = route_titles(question, intent)
     context = build_context(titles, sents=8)
 
-    # Choose prompt per intent
-    if intent == "threats":
-        prompt = prompt_threats(question, context, persona)
-        required = ["1) Direct answer:", "2) Top causes:", "3) What can help:", "4) Sources:"]
-    elif intent == "entity":
-        prompt = prompt_entity(question, context, persona)
-        required = ["1) Direct answer:", "2) Key facts:", "3) Context note:", "4) Sources:"]
-    else:
-        prompt = prompt_topic(question, context, persona)
-        required = ["1) What it is:", "2) How it works:", "3) Why it matters:", "4) What scientists watch:", "5) Sources:"]
+    prompt = build_json_prompt(intent, question, context)
+    raw = ask_llm(prompt)
+    data = try_parse_json(raw)
 
-    # Run model (optional) then validate; else fall back deterministically
-    answer = ""
-    llm = load_llm()
-    if llm is not None:
-        try:
-            out = llm(prompt, max_new_tokens=360)
-            answer = out[0]["generated_text"].strip()
-        except Exception as e:
-            answer = f"(Model error: {e})"
+    if data is None:
+        fixed = ask_llm(f"Return VALID JSON only. Fix this to valid JSON without adding content:\n{raw}")
+        data = try_parse_json(fixed)
 
-    if not validate_has_sections(answer, required):
-        if intent == "threats":
-            answer = fallback_threats(titles)
-        elif intent == "entity":
-            answer = fallback_entity(titles)
-        else:
-            answer = fallback_topic(titles)
+    if data is None:
+        data = fallback_json(intent, titles)
 
-    return {"answer": answer, "sources": titles, "raw_context": context}
+    answer_md = render_answer(intent, data)
+    return {"answer": answer_md, "sources": titles, "raw_context": context}
 
 # ---------------------
-# Streamlit UI assembly
+# Streamlit UI
 # ---------------------
 st.set_page_config(page_title="BlueMind – Marine Chatbot", page_icon="🌊", layout="wide")
 st.title("🌊 BlueMind – The Marine Chatbot")
@@ -447,7 +472,7 @@ st.caption("Ask about oceans, climate, species, currents, exploration, and conse
 
 with st.sidebar:
     st.header("Controls")
-    persona = st.selectbox("Answer style", ["Scientist", "Naturalist", "Policy", "Poetic"], index=0)
+    # Persona removed; fixed professional tone
     st.markdown("---")
     st.subheader("Ocean Data Query")
     lat = st.number_input("Latitude", value=0.0, step=0.5, format="%.3f")
@@ -455,20 +480,19 @@ with st.sidebar:
     start_date = st.text_input("Start date (YYYY-MM-DD)", value=pd.Timestamp.utcnow().date().isoformat())
     end_date = st.text_input("End date (YYYY-MM-DD)", value=pd.Timestamp.utcnow().date().isoformat())
     st.markdown("---")
-    st.info("Tip: Change persona for different answer styles. Use Ocean Data tab to fetch marine conditions for a point.")
+    st.info("Groq enabled if GROQ_API_KEY is set in Secrets. Otherwise tries a tiny local model.")
 
-# Use a form so Enter submits
 chat_tab, data_tab, species_tab, map_tab = st.tabs(["💬 Chat", "🌡 Ocean Data", "🐠 Species", "🗺 Map"])
 
 with chat_tab:
     st.subheader("Ask the Ocean")
     with st.form("chat_form"):
-        q = st.text_input("Your question about the ocean:", placeholder="e.g., Why are ocean animals in danger? / biggest fish / coral bleaching")
-        search_terms = st.text_input("Optional: refine retrieval keywords", placeholder="e.g., bycatch plastic pollution")
+        q = st.text_input("Your question about the ocean:", placeholder="e.g., biggest fish / coral bleaching / why are ocean animals in danger?")
         submitted = st.form_submit_button("Answer")
+
     if submitted and q.strip():
         with st.spinner("Thinking with tides..."):
-            result = generate_answer(q, persona, search_terms)
+            result = generate_answer(q)
         st.markdown("### Answer")
         st.write(result["answer"])
         if result.get("sources"):
@@ -495,11 +519,7 @@ with data_tab:
                     fig2 = px.line(df, x="time", y="wind_speed_10m", title="Wind Speed 10m (m/s)")
                     st.plotly_chart(fig2, use_container_width=True)
     with col2:
-        st.info(
-            "Data source: Open-Meteo Marine (free). "
-            "Swap in NOAA ERDDAP/NDBC for production. "
-            "Enhancements: add bathymetry & SST layers, anomalies vs. climatology, buoy metadata."
-        )
+        st.info("Data source: Open-Meteo Marine (free). Add NOAA ERDDAP/NDBC later for richer data.")
 
 with species_tab:
     st.subheader("Marine Species Guide")
@@ -534,4 +554,4 @@ with map_tab:
     st.plotly_chart(figm, use_container_width=True)
 
 st.markdown("---")
-st.caption("BlueMind • Wikipedia + Open-Meteo • Intent-aware answers (threats / entity / topic).")
+st.caption("BlueMind • Groq LLaMA-3.1-70B JSON answers • Wikipedia + Open-Meteo.")
