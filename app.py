@@ -1,12 +1,12 @@
 # BlueMind: The Marine Chatbot (single-file Streamlit app)
 
-import textwrap
 from typing import Dict, List, Optional
+import textwrap
 
-import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+import streamlit as st
 
 # Try to load a small local model via transformers (no API key needed)
 try:
@@ -39,7 +39,7 @@ def http_get_json(url: str, params: Optional[dict] = None, headers: Optional[dic
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 
 @st.cache_data(show_spinner=False)
-def wiki_search(query: str, limit: int = 3) -> List[Dict]:
+def wiki_search(query: str, limit: int = 5) -> List[Dict]:
     params = {
         "action": "query",
         "list": "search",
@@ -140,128 +140,222 @@ def load_llm():
         st.warning(f"Could not load local HF model: {e}. Tip: add 'torch' to requirements.txt or switch to an API LLM later.")
         return None
 
-# Curated pages for generic "why are ocean animals in danger?" queries
+# -----------------------------
+# Intent routing & topic banks
+# -----------------------------
 THREAT_PAGES = [
-    "Overfishing",
-    "Bycatch",
-    "Marine pollution",
-    "Plastic pollution",
-    "Ocean acidification",
-    "Climate change and oceans",
-    "Coral bleaching",
-    "Habitat destruction",
-    "Noise pollution",
-    "Invasive species",
+    "Overfishing", "Bycatch", "Marine pollution", "Plastic pollution",
+    "Ocean acidification", "Climate change and oceans", "Coral bleaching",
+    "Habitat destruction", "Noise pollution", "Invasive species",
 ]
-
+MARINE_ENTITY_WORDS = (
+    "fish","shark","whale","dolphin","porpoise","seal","sea lion","manatee","dugong",
+    "turtle","ray","skate","octopus","squid","cuttlefish","jellyfish","crab","lobster",
+    "shrimp","krill","eel","anchovy","tuna","salmon","cod","mola","sunfish"
+)
 DANGER_KEYWORDS = (
-    "danger", "threat", "endangered", "risk", "dying", "decline",
-    "why are ocean animals", "why are marine animals", "why are sea animals",
+    "danger","threat","endangered","risk","dying","decline",
+    "why are ocean animals","why are marine animals","why are sea animals",
 )
 
-def route_topics(question: str) -> List[str]:
-    """Router: for 'danger/threat' style queries, use curated pages; else use wiki search."""
-    q = (question or "").lower()
+def classify_intent(question: str) -> str:
+    q = (question or "").lower().strip()
     if any(k in q for k in DANGER_KEYWORDS):
-        return THREAT_PAGES[:5]  # concise top 5
-    pages = wiki_search(question, limit=3)
-    titles = [p.get("title") for p in pages if p.get("title")]
-    return titles
+        return "threats"
+    if any(w in q for w in ("largest","biggest","fastest","deepest","heaviest","longest")):
+        return "entity"
+    if any(w in q for w in MARINE_ENTITY_WORDS):
+        return "entity"
+    return "topic"
 
-def build_prompt(question: str, retrieved_notes: str, persona: str = "Scientist") -> str:
+def route_titles(question: str, intent: str) -> List[str]:
+    q = (question or "").strip()
+    if intent == "threats":
+        return THREAT_PAGES[:5]
+
+    # Heuristics for common superlative questions
+    ql = q.lower()
+    if intent == "entity":
+        if "largest fish" in ql or "biggest fish" in ql:
+            return ["Whale shark", "List of largest fish"]
+        if "largest shark" in ql or "biggest shark" in ql:
+            return ["Whale shark", "List of largest sharks"]
+        if "largest mammal" in ql or "biggest mammal" in ql:
+            return ["Blue whale"]
+        # Otherwise, use search and filter to marine-y titles
+        hits = wiki_search(q, limit=5)
+        titles = [h.get("title") for h in hits if h.get("title")]
+        keep = []
+        for t in titles:
+            tl = t.lower()
+            if any(w in tl for w in MARINE_ENTITY_WORDS):
+                keep.append(t)
+        return keep[:3] or titles[:3]
+
+    # topic (default): use search; prefer exact-ish matches
+    hits = wiki_search(q, limit=5)
+    titles = [h.get("title") for h in hits if h.get("title")]
+    # Prefer exact title or those that contain the query words
+    words = [w for w in ql.split() if len(w) >= 4]
+    def good(t):
+        tl = t.lower()
+        return any(w in tl for w in words) or len(words) == 0
+    filtered = [t for t in titles if good(t)]
+    return filtered[:3] or titles[:3]
+
+# -----------------------------
+# Prompts per intent
+# -----------------------------
+def prompt_threats(question: str, context: str, persona: str) -> str:
     role = {
         "Scientist": "Explain with clear steps, definitions, and short paragraphs.",
-        "Naturalist": "Explain with biology/ecology focus and accessible language.",
-        "Policy": "Explain practical implications for conservation policy and humans.",
-        "Poetic": "Explain accurately but with a gentle, metaphorical tone.",
+        "Naturalist": "Explain with ecology focus and accessible language.",
+        "Policy": "Explain practical implications for conservation and people.",
+        "Poetic": "Explain accurately with gentle, metaphorical tone.",
     }.get(persona, "Explain clearly and concisely.")
 
     exemplar = """
-EXAMPLE QUESTION:
-Why are coral reefs bleaching?
-
-EXAMPLE CONTEXT (snippets):
-# Coral bleaching
-Coral bleaching occurs when corals expel symbiotic algae (zooxanthellae) due to heat stress...
-# Ocean acidification
-Decreasing pH reduces carbonate ion availability, impairing calcification...
-
-EXAMPLE ANSWER (follow this exact structure):
-1) Direct answer: Coral reefs bleach mainly when unusually warm water stresses corals, causing them to expel symbiotic algae. Pollution and ocean acidification make recovery harder.
-
+EXAMPLE ANSWER FORMAT:
+1) Direct answer: One or two sentences summarizing the key threats.
 2) Top causes:
-- Marine heatwaves → Heat stress → 2016 Great Barrier Reef mass bleaching.
-- Ocean acidification → Weaker calcification → Slower growth and fragility.
-- Pollution & sediments → Light reduction & disease risk → Nearshore reef decline.
-- Overfishing → Food-web imbalance (algae overgrowth) → Lower reef resilience.
-- Destructive practices → Physical damage → Blast/anchor damage on coral heads.
-
-3) What can help: Cut greenhouse gases, reduce local pollution, protect herbivores, expand marine protected areas, and monitor heat alerts.
-
-4) Sources: Coral bleaching, Ocean acidification, Overfishing
+- Overfishing → Stocks depleted → Atlantic cod collapse (1990s).
+- Plastic pollution → Ingestion/entanglement → Turtles ingesting bags.
+- Ocean acidification → Weaker shells/skeletons → Pteropod shell dissolution.
+- Marine heatwaves → Heat stress → 2016 Great Barrier Reef bleaching.
+- Bycatch → Non-target mortality → Turtle/seabird deaths in longlines.
+3) What can help: Concrete actions in 1 line.
+4) Sources: Comma-separated page titles.
 """.strip()
 
-    template = f"""
+    tpl = f"""
 You are BlueMind, a careful ocean expert. {role}
-Use ONLY the context provided to answer.
+Use ONLY the context.
 
 CONTEXT:
-{retrieved_notes}
+{context}
 
 QUESTION:
 {question}
 
 INSTRUCTIONS:
-- Follow the EXAMPLE ANSWER structure exactly.
-- Do not repeat headings without content.
-- Keep each bullet to one line: cause → mechanism → example.
-- If context is missing something, say so briefly in the Direct answer.
+- Follow the EXAMPLE ANSWER FORMAT exactly.
+- Keep bullets to one line: cause → mechanism → example.
+- If context is missing something, say so briefly in Direct answer.
 
 {exemplar}
 
 NOW WRITE YOUR ANSWER:
 """
-    return textwrap.dedent(template).strip()
+    return textwrap.dedent(tpl).strip()
 
-def validate_answer(text: str) -> bool:
-    """Check if the model filled the template with real content."""
-    if not text or len(text) < 100:
-        return False
-    must_have = ["1) Direct answer:", "2) Top causes:", "3) What can help:", "4) Sources:"]
-    if not all(m in text for m in must_have):
-        return False
-    bad_frag = "Top causes (bulleted, cause"
-    if bad_frag.lower() in text.lower():
-        return False
-    if "- " not in text:
-        return False
-    return True
+def prompt_entity(question: str, context: str, persona: str) -> str:
+    role = {
+        "Scientist": "Be precise with sizes, taxonomy, and qualifiers.",
+        "Naturalist": "Be clear and friendly; highlight key traits and habitat.",
+        "Policy": "Note conservation status and human impacts briefly.",
+        "Poetic": "Accurate, but with a hint of wonder.",
+    }.get(persona, "Be precise and concise.")
 
-def compose_fallback_answer(titles: List[str]) -> str:
-    """Deterministic answer if the LLM outputs junk."""
-    mechanisms = {
-        "Overfishing": "Stocks depleted → food-web shifts → Atlantic cod collapse (1990s).",
-        "Bycatch": "Non-target species killed in nets/longlines → turtle & seabird losses.",
-        "Marine pollution": "Nutrients/oil/sewage → hypoxia & disease → Gulf of Mexico dead zone.",
-        "Plastic pollution": "Ingestion/entanglement → injury & starvation → turtles ingesting bags.",
-        "Ocean acidification": "Lower pH → fewer carbonate ions → weaker shells/skeletons.",
-        "Climate change and oceans": "Warming & stratification → habitat shifts & heatwaves.",
-        "Coral bleaching": "Heat stress → algae expelled → GBR mass bleaching 2016/2020.",
-        "Habitat destruction": "Trawling/coastal build → seafloor & nursery loss.",
-        "Noise pollution": "Ship/seismic noise → communication stress → whale navigation issues.",
-        "Invasive species": "Ballast transport → native displacement → lionfish in W. Atlantic.",
+    exemplar = """
+EXAMPLE ANSWER FORMAT:
+1) Direct answer: “The whale shark (Rhincodon typus) is the largest living fish.”
+2) Key facts:
+- Typical & maximum size (ranges, sources vary; note uncertainty).
+- Where it lives (oceans/latitudes/habitats).
+- Diet/behavior basics.
+3) Context note: If multiple contenders exist (e.g., basking shark), mention them briefly.
+4) Sources: Page titles used.
+""".strip()
+
+    tpl = f"""
+You are BlueMind, a marine naturalist. {role}
+Use ONLY the context.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+INSTRUCTIONS:
+- Start with a one-sentence direct answer to the superlative question.
+- Then give 3–4 short bullets of key facts.
+- Avoid generic threats unless the question asks about threats.
+- If context is thin, state the most likely answer and note uncertainty.
+- End with 'Sources:' and the page titles.
+
+{exemplar}
+
+NOW WRITE YOUR ANSWER:
+"""
+    return textwrap.dedent(tpl).strip()
+
+def prompt_topic(question: str, context: str, persona: str) -> str:
+    role = {
+        "Scientist": "Explain mechanisms and use crisp structure.",
+        "Naturalist": "Keep it accessible; link process to ecosystems.",
+        "Policy": "Highlight impacts and mitigation briefly.",
+        "Poetic": "Stay accurate; add gentle imagery.",
+    }.get(persona, "Explain clearly.")
+
+    exemplar = """
+EXAMPLE ANSWER FORMAT:
+1) What it is: 1–2 lines definition.
+2) How it works: 3 bullets (process → effect).
+3) Why it matters: 2 bullets (ecology/people).
+4) What scientists watch: 2 bullets (indicators/events).
+5) Sources: Titles.
+""".strip()
+
+    tpl = f"""
+You are BlueMind, an ocean explainer. {role}
+Use ONLY the context.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+INSTRUCTIONS:
+- Follow the EXAMPLE ANSWER FORMAT.
+- Be concise; no filler.
+- End with 'Sources:' and the page titles.
+
+{exemplar}
+
+NOW WRITE YOUR ANSWER:
+"""
+    return textwrap.dedent(tpl).strip()
+
+# -----------------------------
+# Validators & fallbacks
+# -----------------------------
+def validate_has_sections(text: str, required: List[str]) -> bool:
+    if not text or len(text) < 60:
+        return False
+    return all(h in text for h in required)
+
+def fallback_threats(titles: List[str]) -> str:
+    mech = {
+        "Overfishing": "Stocks depleted → food-web shifts → Cod collapse (1990s).",
+        "Bycatch": "Non-target mortality in nets/longlines → Turtles & seabirds.",
+        "Marine pollution": "Nutrients/oil/sewage → Hypoxia & disease.",
+        "Plastic pollution": "Ingestion/entanglement → Injury & starvation.",
+        "Ocean acidification": "Lower pH → Fewer carbonate ions → Weaker shells.",
+        "Climate change and oceans": "Warming/stratification → Heatwaves & habitat shifts.",
+        "Coral bleaching": "Heat stress → Symbionts expelled → Mass bleaching.",
+        "Habitat destruction": "Trawling/coastal build → Seafloor & nursery loss.",
+        "Noise pollution": "Ship/seismic noise → Communication stress.",
+        "Invasive species": "Ballast transfer → Native displacement → Lionfish.",
     }
-    picked = [t for t in titles if t in mechanisms] or titles[:5]
-    bullets = [f"- {t} → {mechanisms.get(t, 'See context excerpt above.')}" for t in picked[:5]]
+    picked = [t for t in titles if t in mech] or titles[:5]
+    bullets = [f"- {t} → {mech.get(t, 'See context excerpt above.')}" for t in picked[:5]]
     direct = (
-        "Marine animals are under pressure from multiple human-driven threats that reduce habitat quality, "
-        "alter food webs, and increase mortality. The biggest drivers are overfishing/bycatch, pollution "
-        "(including plastics), and climate-related changes such as warming and acidification."
+        "Marine animals face multiple human-driven threats that reduce habitat quality, alter food webs, "
+        "and increase mortality."
     )
-    helpm = (
-        "Tighten sustainable catch limits, cut bycatch, reduce nutrient/plastic pollution, protect and restore "
-        "critical habitats, and reduce greenhouse-gas emissions."
-    )
+    helpm = "Cut overfishing/bycatch, reduce pollution, protect habitats, and curb greenhouse-gas emissions."
     return (
         f"1) Direct answer: {direct}\n\n"
         f"2) Top causes:\n" + "\n".join(bullets) + "\n\n"
@@ -269,22 +363,62 @@ def compose_fallback_answer(titles: List[str]) -> str:
         f"4) Sources: " + ", ".join(picked)
     )
 
-def generate_answer(question: str, persona: str, search_terms: Optional[str] = None) -> Dict:
-    # Decide which pages to use (router → curated topics for danger-style questions)
-    titles = route_topics(search_terms or question)
+def fallback_entity(titles: List[str]) -> str:
+    if "Whale shark" in titles or "List of largest fish" in titles:
+        return (
+            "1) Direct answer: The whale shark (*Rhincodon typus*) is the largest living fish.\n\n"
+            "2) Key facts:\n"
+            "- Typical size ~10–12 m; occasionally reported larger; filter-feeding shark.\n"
+            "- Found in tropical & warm-temperate oceans; migratory.\n"
+            "- Gentle filter feeder on plankton/small fishes; often near surface.\n\n"
+            "3) Context note: The basking shark is also very large but typically smaller.\n\n"
+            "4) Sources: Whale shark, List of largest fish"
+        )
+    # Generic entity fallback
+    return (
+        "1) Direct answer: Based on context, the requested marine superlative likely refers to a well-known species.\n\n"
+        "2) Key facts:\n- See sources for the most relevant candidate(s).\n\n"
+        "3) Context note: Provide a more specific phrase (e.g., 'largest fish in the ocean').\n\n"
+        "4) Sources: " + ", ".join(titles[:3])
+    )
 
-    # Build context from Wikipedia extracts
+def fallback_topic(titles: List[str]) -> str:
+    return (
+        "1) What it is: See the sources for a concise definition of the topic.\n\n"
+        "2) How it works:\n- Mechanism 1\n- Mechanism 2\n- Mechanism 3\n\n"
+        "3) Why it matters:\n- Ecosystem impact\n- Human impact\n\n"
+        "4) What scientists watch:\n- Key indicator 1\n- Key indicator 2\n\n"
+        "5) Sources: " + ", ".join(titles[:3])
+    )
+
+# -----------------------------
+# Orchestrator
+# -----------------------------
+def build_context(titles: List[str], sents: int = 8) -> str:
     extracts = []
     for t in titles:
         if not t:
             continue
-        extracts.append(f"# {t}\n" + (wiki_extract(t, sentences=8) or ""))
-    context = "\n\n".join(extracts) if extracts else "(No external context retrieved.)"
+        extracts.append(f"# {t}\n" + (wiki_extract(t, sentences=sents) or ""))
+    return "\n\n".join(extracts) if extracts else "(No external context retrieved.)"
 
-    # Build prompt
-    prompt = build_prompt(question, context, persona)
+def generate_answer(question: str, persona: str, search_terms: Optional[str] = None) -> Dict:
+    intent = classify_intent(search_terms or question)
+    titles = route_titles(search_terms or question, intent)
+    context = build_context(titles, sents=8)
 
-    # Try HF local model; if unavailable or garbage, fall back to deterministic synthesis
+    # Choose prompt per intent
+    if intent == "threats":
+        prompt = prompt_threats(question, context, persona)
+        required = ["1) Direct answer:", "2) Top causes:", "3) What can help:", "4) Sources:"]
+    elif intent == "entity":
+        prompt = prompt_entity(question, context, persona)
+        required = ["1) Direct answer:", "2) Key facts:", "3) Context note:", "4) Sources:"]
+    else:
+        prompt = prompt_topic(question, context, persona)
+        required = ["1) What it is:", "2) How it works:", "3) Why it matters:", "4) What scientists watch:", "5) Sources:"]
+
+    # Run model (optional) then validate; else fall back deterministically
     answer = ""
     llm = load_llm()
     if llm is not None:
@@ -292,16 +426,17 @@ def generate_answer(question: str, persona: str, search_terms: Optional[str] = N
             out = llm(prompt, max_new_tokens=360)
             answer = out[0]["generated_text"].strip()
         except Exception as e:
-            answer = f"Model error, falling back to summary. Error: {e}"
+            answer = f"(Model error: {e})"
 
-    if not validate_answer(answer):
-        answer = compose_fallback_answer(titles)
+    if not validate_has_sections(answer, required):
+        if intent == "threats":
+            answer = fallback_threats(titles)
+        elif intent == "entity":
+            answer = fallback_entity(titles)
+        else:
+            answer = fallback_topic(titles)
 
-    return {
-        "answer": answer,
-        "sources": titles,
-        "raw_context": context,
-    }
+    return {"answer": answer, "sources": titles, "raw_context": context}
 
 # ---------------------
 # Streamlit UI assembly
@@ -322,16 +457,15 @@ with st.sidebar:
     st.markdown("---")
     st.info("Tip: Change persona for different answer styles. Use Ocean Data tab to fetch marine conditions for a point.")
 
+# Use a form so Enter submits
 chat_tab, data_tab, species_tab, map_tab = st.tabs(["💬 Chat", "🌡 Ocean Data", "🐠 Species", "🗺 Map"])
 
 with chat_tab:
     st.subheader("Ask the Ocean")
-
     with st.form("chat_form"):
-        q = st.text_input("Your question about the ocean:", placeholder="e.g., Why are ocean animals in danger?")
+        q = st.text_input("Your question about the ocean:", placeholder="e.g., Why are ocean animals in danger? / biggest fish / coral bleaching")
         search_terms = st.text_input("Optional: refine retrieval keywords", placeholder="e.g., bycatch plastic pollution")
         submitted = st.form_submit_button("Answer")
-
     if submitted and q.strip():
         with st.spinner("Thinking with tides..."):
             result = generate_answer(q, persona, search_terms)
@@ -342,7 +476,6 @@ with chat_tab:
             st.write(", ".join(result["sources"]))
         with st.expander("Show retrieved context"):
             st.code(result.get("raw_context") or "(none)")
-
 
 with data_tab:
     st.subheader("Marine Conditions (Hourly)")
@@ -401,4 +534,4 @@ with map_tab:
     st.plotly_chart(figm, use_container_width=True)
 
 st.markdown("---")
-st.caption("BlueMind starter • RAG via Wikipedia • Marine data via Open-Meteo fallback • Swap in NOAA/ESA for richer insights.")
+st.caption("BlueMind • Wikipedia + Open-Meteo • Intent-aware answers (threats / entity / topic).")
