@@ -28,9 +28,10 @@ def http_get_json(url: str, params: Optional[dict] = None, headers: Optional[dic
     try:
         # Wikipedia and some APIs require a descriptive User-Agent
         if headers is None:
-            headers = {"User-Agent": "BlueMind/0.1 (+https://github.com/your-username/bluemind-marine-chatbot)"}
+    headers = {"User-Agent": "BlueMind/0.1 (+https://github.com/<your-username>/bluemind-marine-chatbot)"}
         else:
-            headers.setdefault("User-Agent", "BlueMind/0.1 (+https://github.com/your-username/bluemind-marine-chatbot)")
+    headers.setdefault("User-Agent", "BlueMind/0.1 (+https://github.com/<your-username>/bluemind-marine-chatbot)")
+
         r = requests.get(url, params=params, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
@@ -144,8 +145,7 @@ def load_llm():
         # Flan-T5 is lightweight and good for zero-cost demos (text2text)
         return pipeline("text2text-generation", model="google/flan-t5-base")
     except Exception as e:
-        st.warning(f"Could not load local HF model: {e}
-Tip: add 'torch' to requirements.txt or switch to an API LLM later.")
+        st.warning(f"Could not load local HF model: {e}. Tip: add 'torch' to requirements.txt or switch to an API LLM later.")
         return None
 
 # Curated pages for generic "why are ocean animals in danger?" queries
