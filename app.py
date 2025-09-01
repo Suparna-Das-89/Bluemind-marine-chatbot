@@ -105,12 +105,12 @@ OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
 @st.cache_data(show_spinner=False)
 def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Optional[pd.DataFrame]:
     params = {
-        "latitude": lat, "longitude": lon,
-        "hourly": [
-            "wave_height","wave_direction","wind_wave_height","wind_wave_direction",
-            "swell_wave_height","swell_wave_direction","wind_speed_10m",
-        ],
-        "start_date": start, "end_date": end, "timezone": "UTC",
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "wave_height,wave_direction,wind_wave_height,wind_wave_direction,swell_wave_height,swell_wave_direction,wind_speed_10m",
+        "start_date": start,
+        "end_date": end,
+        "timezone": "UTC",
     }
     data = http_get_json(OPEN_METEO_MARINE, params)
     if not data or "hourly" not in data:
