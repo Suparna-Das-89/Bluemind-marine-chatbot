@@ -98,36 +98,42 @@ def wiki_page_image(title: str) -> Optional[str]:
     return original.get("source") if original else None
 
 # ---------------------------
-# Ocean data (Open-Meteo)
-# ---------------------------
-# ---------------------------
-# Ocean data (Open-Meteo) — fixed
+# Ocean data (Open-Meteo) — fixed JSON array for hourly
 # ---------------------------
 OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
 
 @st.cache_data(show_spinner=False)
 def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Optional[pd.DataFrame]:
     try:
-        # Ensure coordinates are within valid marine bounds
+        # Validate coordinates
         if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
             st.warning("Invalid coordinates. Please enter valid lat/lon in oceans.")
             return None
 
-        # Ensure start_date <= end_date
+        # Convert start/end dates
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
         if end_dt < start_dt:
             st.warning("End date must be after start date. Adjusting automatically.")
             end_dt = start_dt + pd.Timedelta(days=1)
 
-        # Open-Meteo may fail on single-day; ensure at least 2 days
+        # Ensure at least 1 day
         if (end_dt - start_dt).days < 1:
             end_dt = start_dt + pd.Timedelta(days=1)
 
+        # Open-Meteo expects hourly as array
         params = {
             "latitude": lat,
             "longitude": lon,
-            "hourly": "wave_height,wave_direction,wind_wave_height,wind_wave_direction,swell_wave_height,swell_wave_direction,wind_speed_10m",
+            "hourly": [
+                "wave_height",
+                "wave_direction",
+                "wind_wave_height",
+                "wind_wave_direction",
+                "swell_wave_height",
+                "swell_wave_direction",
+                "wind_speed_10m"
+            ],
             "start_date": start_dt.date().isoformat(),
             "end_date": end_dt.date().isoformat(),
             "timezone": "UTC",
@@ -146,6 +152,7 @@ def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Opt
     except Exception as e:
         st.warning(f"Request failed: {e}")
         return None
+
 
 
 # ---------------------------
