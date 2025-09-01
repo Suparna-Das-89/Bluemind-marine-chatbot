@@ -8,6 +8,24 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+import os
+
+def get_groq_key() -> Optional[str]:
+    # Try secrets and env, multiple casings, to avoid typos
+    return (
+        (st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None)
+        or os.getenv("GROQ_API_KEY")
+        or os.getenv("groq_api_key")
+        or (st.secrets.get("groq_api_key") if hasattr(st, "secrets") else None)
+    )
+
+def mask(s: Optional[str]) -> str:
+    if not s:
+        return "False"
+    s = s.strip()
+    return f"True (len={len(s)}, startswith={s[:4]}•••)"
+
+
 # Optional local fallback model (no key). If not present, we just skip it.
 try:
     from transformers import pipeline
@@ -126,28 +144,36 @@ def get_groq_key() -> Optional[str]:
     )
 
 def ask_llm(prompt: str) -> str:
-    """Prefer Groq LLaMA-3.1-70B; fallback to local tiny model if no key."""
+    """Prefer Groq; fallback to local tiny model if no key."""
     groq_key = get_groq_key()
     if groq_key:
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {
-                "Authorization": f"Bearer {groq_key}",
+                "Authorization": f"Bearer {groq_key.strip()}",
                 "Content-Type": "application/json",
             }
             body = {
-                "model": "llama-3.1-70b-versatile",  # works great for reasoning
+                "model": "llama-3.3-70b-versatile",  # updated model id
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2,
             }
             r = requests.post(url, json=body, headers=headers, timeout=45)
-            # If it's a 401, surface that clearly so you know it's the key
             if r.status_code == 401:
-                raise RuntimeError("Groq 401 Unauthorized — check GROQ_API_KEY in secrets/env.")
+                # Surface a clear hint
+                raise RuntimeError("Groq 401 Unauthorized — key missing/invalid or wrong app secrets.")
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
             st.warning(f"Groq call failed, using local fallback. ({e})")
+
+    # Local fallback (optional)
+    llm = load_local_llm()
+    if llm is None:
+        return ""
+    out = llm(prompt, max_new_tokens=420)
+    return out[0]["generated_text"].strip()
+
 
     # Local fallback (optional)
     llm = load_local_llm()
