@@ -637,17 +637,31 @@ with species_tab:
                 st.write(extract or "(no extract)")
 
 
+import streamlit as st
+import leafmap.foliumap as leafmap
+
 with map_tab:
-    st.subheader("Global Ocean Map (scaffold)")
-    st.write("This is a placeholder world map; add layers like SST, chlorophyll, or buoys.")
-    df_ocean = pd.DataFrame({
-        "lat": [0, 30, -30, 15, -15],
-        "lon": [-140, 20, 60, -10, 120],
-        "label": ["Pacific", "Atlantic", "Indian", "Atlantic N", "Pacific W"],
-    })
-    figm = px.scatter_geo(df_ocean, lat="lat", lon="lon", hover_name="label", projection="natural earth")
-    figm.update_layout(height=500, margin=dict(l=0, r=0, t=40, b=0))
-    st.plotly_chart(figm, use_container_width=True)
+    st.subheader("🌊 Global Ocean Map with Sea Surface Temperature (SST)")
+
+    # Create the base map
+    m = leafmap.Map(center=[0, 0], zoom=2, draw_control=False, measure_control=True)
+
+    # Add NASA GIBS SST layer
+    m.add_tile_layer(
+        url="https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_L3_SST_MidIR_4km_Day/default/2025-09-01/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
+        name="Sea Surface Temperature",
+        attribution="NASA GIBS",
+        shown=True
+    )
+
+    # Add click event to display lat/lon
+    m.add_latlon_popup()  # 👈 shows a popup with lat/lon when clicking
+    m.add_coordinates_control()  # 👈 shows live lat/lon at bottom-right
+
+    # Render in Streamlit
+    m.to_streamlit(height=600)
+
+    st.info("💡 Tip: Click anywhere on the map to see latitude/longitude. Use these values to query ocean data.")
 
 st.markdown("---")
 st.caption("BlueMind • Groq LLaMA-3.1-70B JSON answers • Wikipedia + Open-Meteo.")
