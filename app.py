@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import os
-import leafmap.foliumap as leafmap
+import leafmap
 
 
 def get_groq_key() -> Optional[str]:
