@@ -146,7 +146,7 @@ def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Opt
         weather_params = {
             "latitude": lat,
             "longitude": lon,
-            "hourly": "windspeed_10m",  # <-- correct variable name here
+            "hourly": "windspeed_10m",  
             "start_date": start_dt.date().isoformat(),
             "end_date": end_dt.date().isoformat(),
             "timezone": "UTC",
@@ -618,23 +618,24 @@ with data_tab:
 
 with species_tab:
     st.subheader("Marine Species Guide")
-    species_query = st.text_input("Species or topic (e.g., 'Blue whale', 'Giant squid')")
-    if st.button("Lookup species"):
-        if not species_query.strip():
-            st.warning("Enter a species or topic.")
+    with st.form("species_form"):
+        species_query = st.text_input("Species or topic (e.g., 'Blue whale', 'Giant squid')")
+        submitted = st.form_submit_button("Lookup species")
+
+    if submitted and species_query.strip():
+        pages = wiki_search(species_query, limit=1)
+        if not pages:
+            st.warning("No result found.")
         else:
-            pages = wiki_search(species_query, limit=1)
-            if not pages:
-                st.warning("No result found.")
-            else:
-                title = pages[0].get("title")
-                if title:
-                    img = wiki_page_image(title)
-                    if img:
-                        st.image(img, caption=title, use_column_width=True)
-                    extract = wiki_extract(title, sentences=10)
-                    st.markdown(f"### {title}")
-                    st.write(extract or "(no extract)")
+            title = pages[0].get("title")
+            if title:
+                img = wiki_page_image(title)
+                if img:
+                    st.image(img, caption=title, use_container_width=True)  
+                extract = wiki_extract(title, sentences=10)
+                st.markdown(f"### {title}")
+                st.write(extract or "(no extract)")
+
 
 with map_tab:
     st.subheader("Global Ocean Map (scaffold)")
