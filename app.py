@@ -98,9 +98,14 @@ def wiki_page_image(title: str) -> Optional[str]:
     return original.get("source") if original else None
 
 # ---------------------------
-# Ocean data (Open-Meteo) — fixed JSON array for hourly
+# Ocean data (Open-Meteo) — fixed JSON array for hourly 
 # ---------------------------
+
+# Marine API (waves only)
 OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
+# Weather API (for wind speed)
+OPEN_METEO_WEATHER = "https://api.open-meteo.com/v1/forecast"
+
 
 @st.cache_data(show_spinner=False)
 def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Optional[pd.DataFrame]:
@@ -111,38 +116,56 @@ def fetch_marine_timeseries(lat: float, lon: float, start: str, end: str) -> Opt
         if end_dt < start_dt:
             end_dt = start_dt + pd.Timedelta(days=1)
 
-        # Combine hourly parameters as a comma-separated string
-        hourly_params = [
-            "wave_height",
-            "wave_direction",
-            "wind_wave_height",
-            "wind_wave_direction",
-            "swell_wave_height",
-            "swell_wave_direction",
-            "wind_speed_10m",
-        ]
-        params = {
+        # --- 1) Marine API request (wave data only) ---
+        marine_params = {
             "latitude": lat,
             "longitude": lon,
-            "hourly": ",".join(hourly_params),  # <-- important
+            "hourly": ",".join([
+                "wave_height",
+                "wave_direction",
+                "wind_wave_height",
+                "wind_wave_direction",
+                "swell_wave_height",
+                "swell_wave_direction",
+            ]),
             "start_date": start_dt.date().isoformat(),
             "end_date": end_dt.date().isoformat(),
             "timezone": "UTC",
         }
 
-        data = http_get_json(OPEN_METEO_MARINE, params)
-        if not data or "hourly" not in data:
-            st.warning("No data returned. Try different dates or coordinates.")
+        marine_data = http_get_json(OPEN_METEO_MARINE, marine_params)
+
+        if not marine_data or "hourly" not in marine_data:
+            st.warning("No marine data returned. Try different dates or coordinates.")
             return None
 
-        df = pd.DataFrame(data["hourly"])
-        if "time" in df:
-            df["time"] = pd.to_datetime(df["time"])
+        df_marine = pd.DataFrame(marine_data["hourly"])
+        df_marine["time"] = pd.to_datetime(df_marine["time"])
+
+        # --- 2) Weather API request (wind speed only) ---
+        weather_params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "windspeed_10m",  # <-- correct variable name here
+            "start_date": start_dt.date().isoformat(),
+            "end_date": end_dt.date().isoformat(),
+            "timezone": "UTC",
+        }
+
+        weather_data = http_get_json(OPEN_METEO_WEATHER, weather_params)
+
+        df_weather = pd.DataFrame(weather_data["hourly"])
+        df_weather["time"] = pd.to_datetime(df_weather["time"])
+
+        # --- 3) Merge both DataFrames ---
+        df = pd.merge(df_marine, df_weather, on="time", how="outer")
+
         return df
 
     except Exception as e:
         st.warning(f"Request failed: {e}")
         return None
+
 
 
 
