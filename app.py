@@ -7,8 +7,9 @@ import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-
 import os
+import leafmap.foliumap as leafmap
+
 
 def get_groq_key() -> Optional[str]:
     # Try secrets and env, multiple casings, to avoid typos
@@ -637,11 +638,6 @@ with species_tab:
                 st.write(extract or "(no extract)")
 
 
-import streamlit as st
-import leafmap.foliumap as leafmap
-
-import streamlit as st
-import leafmap.foliumap as leafmap
 
 with map_tab:
     st.subheader("🌊 Global Ocean Map")
