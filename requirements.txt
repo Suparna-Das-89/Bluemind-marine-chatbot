@@ -7,5 +7,5 @@ transformers
 sentencepiece
 wikipedia
 torch
-leafmap==0.23.0
+leafmap>=0.25.0,<0.53.0
 
