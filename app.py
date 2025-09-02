@@ -640,28 +640,32 @@ with species_tab:
 import streamlit as st
 import leafmap.foliumap as leafmap
 
-with map_tab:
-    st.subheader("🌊 Global Ocean Map with Sea Surface Temperature (SST)")
+import streamlit as st
+import leafmap.foliumap as leafmap
 
-    # Create the base map
+with map_tab:
+    st.subheader("🌊 Global Ocean Map")
+
+    # Create the map
     m = leafmap.Map(center=[0, 0], zoom=2, draw_control=False, measure_control=True)
 
-    # Add NASA GIBS SST layer
+    # Add NASA GIBS SST as an example overlay
     m.add_tile_layer(
         url="https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_L3_SST_MidIR_4km_Day/default/2025-09-01/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
-        name="Sea Surface Temperature",
+        name="Sea Surface Temperature (NASA)",
         attribution="NASA GIBS",
         shown=True
     )
 
-    # Add click event to display lat/lon
-    m.add_latlon_popup()  # 👈 shows a popup with lat/lon when clicking
-    m.add_coordinates_control()  # 👈 shows live lat/lon at bottom-right
+    # Add lat/lon popup + live coordinates
+    m.add_latlon_popup()
+    m.add_coordinates_control()
 
-    # Render in Streamlit
+    # Show the map
     m.to_streamlit(height=600)
 
     st.info("💡 Tip: Click anywhere on the map to see latitude/longitude. Use these values to query ocean data.")
+
 
 st.markdown("---")
 st.caption("BlueMind • Groq LLaMA-3.1-70B JSON answers • Wikipedia + Open-Meteo.")
