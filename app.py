@@ -639,29 +639,60 @@ with species_tab:
 
 
 
+import folium
+from folium import TileLayer
+from folium.plugins import MousePosition
+import streamlit.components.v1 as components
+from branca.element import Figure
+
+# --- Map tab (folium fallback that doesn't rely on leafmap internals) ---
 with map_tab:
-    st.subheader("🌊 Global Ocean Map")
+    st.subheader("🌊 Global Ocean Map (folium fallback)")
 
-    # Create the map
-    m = leafmap.Map(center=[0, 0], zoom=2, draw_control=False, measure_control=True)
+    # Create a folium Figure (helps set map size)
+    fig = Figure(width="100%", height=600)
 
-    # Add NASA GIBS SST as an example overlay
-    m.add_tile_layer(
-        url="https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_L3_SST_MidIR_4km_Day/default/2025-09-01/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
+    # Create the folium Map
+    fmap = folium.Map(location=[0, 0], zoom_start=2, control_scale=True)
+
+    # Add NASA GIBS SST tile layer (as in your original)
+    TileLayer(
+        tiles="https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
+              "MODIS_Terra_L3_SST_MidIR_4km_Day/default/2025-09-01/"
+              "GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
+        attr="NASA GIBS",
         name="Sea Surface Temperature (NASA)",
-        attribution="NASA GIBS",
-        shown=True
+        overlay=True,
+        control=True,
+    ).add_to(fmap)
+
+    # Add lat/lon popup on click (click anywhere -> popup shows coordinates)
+    folium.LatLngPopup().add_to(fmap)
+
+    # Add a modern floating coordinates control (MousePosition)
+    mouse_position = MousePosition(
+        position="topright",
+        separator=" | ",
+        prefix="LatLon:",
+        num_digits=5,
+        lat_formatter="function(num) {return num.toFixed(5);}",
+        lng_formatter="function(num) {return num.toFixed(5);}"
     )
+    mouse_position.add_to(fmap)
 
-    # Add lat/lon popup + live coordinates
-    # Show coordinates on click + live coordinates panel
-    m.add_latlon_popup()          # ✅ works on 0.52.0+
-    m.add_coordinates_control()
+    # Optional: add LayerControl so tile toggle is visible
+    folium.LayerControl(position="topright", collapsed=False).add_to(fmap)
 
-    # Show the map
-    m.to_streamlit(height=600)
+    # Attach map to the Figure (for sizing) and render as HTML inside Streamlit
+    fig.add_child(fmap)
+    # Use _repr_html_ to get the full HTML representation of the folium map
+    map_html = fig._repr_html_()
 
-    st.info("💡 Tip: Click anywhere on the map to see latitude/longitude. Use these values to query ocean data.")
+    # Render the folium HTML via Streamlit components (keeps it interactive)
+    components.html(map_html, height=600)
+
+    st.info("💡 Tip: Click anywhere on the map to see a popup with latitude/longitude. "
+            "Move your mouse to see live coordinates in the top-right.")
 
 
 st.markdown("---")
