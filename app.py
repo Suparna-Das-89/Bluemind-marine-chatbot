@@ -655,7 +655,7 @@ with map_tab:
 
     # Add lat/lon popup + live coordinates
     # Show coordinates on click + live coordinates panel
-    m.add_latlon_popup()
+    m.add_latlon_popup()          # ✅ works on 0.52.0+
     m.add_coordinates_control()
 
     # Show the map
