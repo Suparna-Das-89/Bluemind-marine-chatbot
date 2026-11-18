@@ -205,7 +205,7 @@ def ask_llm(prompt: str) -> str:
                 "Content-Type": "application/json",
             }
             body = {
-                "model": "llama-3.3-70b-versatile",  # updated model id
+                "model": "openai/gpt-oss-120b",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2,
             }
